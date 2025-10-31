@@ -141,20 +141,58 @@ async function syncBackup(vmId) {
 // ======================
 // Main job
 // ======================
-async function job() {
-    const VM_LIST = (process.env.VM_LIST || "").split(",").map(v => v.trim()).filter(Boolean);
 
-    for (const vmId of VM_LIST) {
-        const successVm = await backupVM(vmId);
-        if (successVm) {
-            await syncBackup(successVm);
-            await cleanupLocal(successVm);
+const fs = require("fs");
+
+const LOCK_FILE = "/tmp/vm_backup.lock";
+let isRunning = false;
+
+// Hàm backup chính
+async function job() {
+    if (isRunning) {
+        console.log(`[${new Date().toISOString()}] Backup đang chạy, bỏ qua lần lặp này...`);
+        return;
+    }
+
+    // Nếu có lock file => có thể script bị treo trước đó
+    if (fs.existsSync(LOCK_FILE)) {
+        const age = Date.now() - parseInt(fs.readFileSync(LOCK_FILE, "utf-8") || "0");
+        // Nếu lock cũ hơn 6h → xoá cho chắc
+        if (age > 6 * 60 * 60 * 1000) {
+            console.log("Lock file cũ hơn 6h, xoá và chạy lại.");
+            fs.unlinkSync(LOCK_FILE);
+        } else {
+            console.log("Backup đang chạy (lock file tồn tại), bỏ qua...");
+            return;
         }
+    }
+
+    isRunning = true;
+    fs.writeFileSync(LOCK_FILE, Date.now().toString());
+
+    try {
+        console.log(`[${new Date().toLocaleString()}] === BẮT ĐẦU BACKUP ===`);
+        const VM_LIST = (process.env.VM_LIST || "").split(",").map(v => v.trim()).filter(Boolean);
+
+        for (const vmId of VM_LIST) {
+            const successVm = await backupVM(vmId);
+            if (successVm) {
+                await syncBackup(successVm);
+                await cleanupLocal(successVm);
+            }
+        }
+        console.log(`[${new Date().toLocaleString()}] === HOÀN TẤT BACKUP ===`);
+    } catch (err) {
+        console.error("Backup lỗi:", err);
+    } finally {
+        isRunning = false;
+        if (fs.existsSync(LOCK_FILE)) fs.unlinkSync(LOCK_FILE);
     }
 }
 
-// Chạy ngay khi start
+// ✅ Chạy ngay khi start
 job();
 
-// Lặp lại mỗi 1 giờ
+// ✅ Lặp lại đúng 1 giờ (3600 giây)
 setInterval(job, 60 * 60 * 1000);
+
